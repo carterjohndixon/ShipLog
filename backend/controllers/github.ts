@@ -146,7 +146,8 @@ export const githubWebhook = async (
     }
 
     const { owner } = repository;
-    const repo = repository.name;
+    // const repo = repository.name;
+    const repo = "ShipLog";
     const latestCommitSHA = head_commit.id;
 
     const githubAccessToken = userTokenStore.get(owner.name);
