@@ -392,6 +392,8 @@ export const trackCommits = async (
                     },
                 );
 
+                console.log("Commit:", commitResponse);
+
                 const files = commitResponse.data.files;
                 const diffCode = files
                     .map((file: any) => {
