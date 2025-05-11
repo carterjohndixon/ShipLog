@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import axios from "axios";
+import supabase from "../db/db";
 
 export const slackOAuthCallback = async (
     req: Request,
@@ -48,12 +49,78 @@ export const slackOAuthCallback = async (
     }
 };
 
+export const getAccessToken = async (
+    req: Request,
+    res: Response,
+): Promise<any> => {
+    const { code } = req.body;
+
+    try {
+        const response = await axios.post(
+            "https://slack.com/api/oauth.v2.access",
+            {
+                client_id: process.env.SLACK_CLIENT_ID,
+                client_secret: process.env.SLACK_CLIENT_SECRET,
+                code: code,
+                redirect_uri: process.env.SLACK_CALLBACK,
+            },
+            {
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            },
+        );
+
+        const data = response.data;
+
+        if (!data.ok) {
+            return res.status(500).json({
+                error: data.error || "Slack OAuth failed",
+            });
+        }
+
+        const accessToken = data.access_token;
+        const userId = data.authed_user.id;
+
+        // const { error } = await supabase
+        //     .from("users")
+        //     .upsert({
+        //         slack_user_id: userId,
+        //         access_token: accessToken,
+        //     })
+        //     .eq("id", userId);
+
+        // if (error) {
+        //     return res.status(500).json({ error: "Failed to store user data" });
+        // }
+
+        console.log(response.data);
+
+        await supabase
+            .from("users")
+            .update({ slack_user_id: userId });
+
+        return res.status(200).json({
+            access_token: accessToken,
+            user_id: userId,
+        });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: err });
+    }
+};
+
 export const getChannels = async (
     req: Request,
     res: Response,
 ): Promise<any> => {
     const accessToken = req.headers.authorization?.split(" ")[1];
-    console.log("SLACK TOKEN:", accessToken);
+    // const accessToken = req.body;
+    console.log("SLACK TOKEN BACKEND:", accessToken);
+
+    const { error } = await supabase
+        .from("user")
+        .update({ access_token: accessToken });
 
     if (!accessToken) {
         return res.status(401).json({ error: "Missing access token" });
@@ -69,7 +136,7 @@ export const getChannels = async (
             },
         );
 
-        console.log("SLACK response:", response.data);
+        console.log("SLACK response BACKEND:", response.data);
         const channels = response.data.channels;
         return res.status(200).json({ channels });
     } catch (err) {
@@ -82,19 +149,24 @@ export const getChannels = async (
 
 export const connectBot = async (req: Request, res: Response): Promise<any> => {
     const accessToken = req.headers.authorization?.split(" ")[1];
-    const { channel, repoId } = req.body;
+    // const { channel, repoId } = req.body;
+    const { channel } = req.body;
+
+    const repo_id = "981309467";
 
     console.log("AccessToken:", accessToken);
+    console.log("channel:", channel);
+    // console.log("repoId:", repoId);
 
-    if (!accessToken || !channel || !repoId) {
-        return res.status(400).json({ error: "Missing necessary data" });
-    }
+    // if (!accessToken || !channel || !repoId) {
+    //     return res.status(400).json({ error: "Missing necessary data" });
+    // }
 
     try {
         const response = await axios.post(
             "https://slack.com/api/conversations.join",
             {
-                token: process.env.SLACK_BOT_TOKEN,
+                token: accessToken,
                 channel: channel,
             },
             {
