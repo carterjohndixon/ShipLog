@@ -67,9 +67,9 @@ export const githubCallback = async (
         const repoNames = repos.map((repo: any) => repo.name);
         console.log("Repositories:", repoNames);
 
-        for (const repo of repos) {
-            await createGithubWebhook(username, repo.name, accessToken);
-        }
+        // for (const repo of repos) {
+        //     await createGithubWebhook(username, repo.name, accessToken);
+        // }
 
         return res.status(200).json({
             username,
@@ -218,9 +218,9 @@ export const createGithubWebhook = async (
     repo: string,
     token: string,
 ) => {
-    // const webhookUrl = "https://localhost:3005/github/api/webhook";
-    const webhookUrl =
-        "https://a2ed-2600-8804-40a-2000-d0f2-a3f9-858f-9089.ngrok-free.app/github/api/webhook";
+    const webhookUrl = "https://localhost:3005/github/api/webhook";
+    // const webhookUrl =
+    //     "https://a2ed-2600-8804-40a-2000-d0f2-a3f9-858f-9089.ngrok-free.app/github/api/webhook";
     const res = await axios.post(
         `https://api.github.com/repos/${owner}/${repo}/hooks`,
         {
@@ -240,7 +240,9 @@ export const getCodeCommit = async (
     req: Request,
     res: Response,
 ): Promise<any> => {
-    const { owner, repo } = req.body;
+    const { owner, repo, channel } = req.body;
+
+    console.log("REPO TO MAKE MESSAGE OF:", repo);
 
     const githubAccessToken = userTokenStore.get(owner);
     if (!githubAccessToken) {
@@ -249,10 +251,10 @@ export const getCodeCommit = async (
         });
     }
 
-    if (!owner || !repo || !githubAccessToken) {
+    if (!owner || !repo || !githubAccessToken || !channel) {
         return res.status(400).json({
             error:
-                "Missing required parameters: owner, repo, and githubAccessToken are required",
+                "Missing required parameters: owner, repo, githubAccessToken, channel ID are required",
         });
     }
 
@@ -307,12 +309,11 @@ export const getCodeCommit = async (
         const aiSummary = aiRes.data.msg?.choices?.[0]?.message?.content ??
             "No summary generated";
 
-        // Create a function that formats the ai response to send to slack.
         await sendCommitToSlack(
             latestCommitSHA,
             commitResponse.data.commit.message,
             aiSummary,
-            SLACK_CHANNEL_ID,
+            channel,
         );
 
         return res.status(200).json({
@@ -339,3 +340,105 @@ export const getCodeCommit = async (
 // eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6IkhlbGxvV29ybGQiLCJpYXQiOjE3NDYyOTgwODJ9.XelSzH8dO8c9VeDfc3WsSlpp2arPeZR4KumxVTmHUF8
 
 // raw_url has the code in files json (https://api.github.com/repos/carterjohndixon/POOFie/commits/7537c2999284fa14f69c724789cc1bc6f0e6610f)
+
+let lastCommitCount = 0;
+
+export const trackCommits = async (
+    req: Request,
+    res: Response,
+): Promise<any> => {
+    const { repo, owner, channel } = req.body;
+
+    console.log("repo:", repo);
+    console.log("owner:", owner);
+    console.log("channel:", channel);
+
+    const githubAccessToken = userTokenStore.get(owner);
+    if (!githubAccessToken) {
+        return res.status(401).json({
+            error: "User not authenticated with GitHub.",
+        });
+    }
+
+    if (!owner || !repo || !githubAccessToken) {
+        return res.status(400).json({
+            error:
+                "Missing required parameters: owner, repo, and githubAccessToken are required",
+        });
+    }
+
+    setInterval(async () => {
+        try {
+            const commitsResponse = await axios.get(
+                `https://api.github.com/repos/${owner}/${repo}/commits`,
+                {
+                    headers: {
+                        Authorization: `Bearer ${githubAccessToken}`,
+                    },
+                },
+            );
+
+            const currentCommitCount = commitsResponse.data.length;
+
+            if (currentCommitCount > lastCommitCount) {
+                const latestCommitSHA = commitsResponse.data[0].sha;
+
+                const commitResponse = await axios.get(
+                    `https://api.github.com/repos/${owner}/${repo}/commits/${latestCommitSHA}`,
+                    {
+                        headers: {
+                            Authorization: `Bearer ${githubAccessToken}`,
+                        },
+                    },
+                );
+
+                const files = commitResponse.data.files;
+                const diffCode = files
+                    .map((file: any) => {
+                        if (!file.patch) return "";
+                        return file.patch
+                            .split("\n")
+                            .filter((line: string) =>
+                                line.startsWith("+") && !line.startsWith("+++")
+                            )
+                            .map((line: string) => line.slice(1))
+                            .join("\n");
+                    })
+                    .join("\n");
+
+                const aiPrompt =
+                    `Summarize the following code changes:\n\n${diffCode}`;
+
+                const aiRes = await axios.post(
+                    "http://127.0.0.1:54321/functions/v1/ant",
+                    { prompt: aiPrompt },
+                    {
+                        headers: {
+                            Authorization:
+                                `Bearer ${process.env.DENO_AI_TOKEN}`,
+                            "Content-Type": "application/json",
+                        },
+                    },
+                );
+
+                const aiSummary =
+                    aiRes.data.msg?.choices?.[0]?.message?.content ??
+                        "No summary generated";
+
+                await sendCommitToSlack(
+                    latestCommitSHA,
+                    commitResponse.data.commit.message,
+                    aiSummary,
+                    channel,
+                );
+
+                lastCommitCount = currentCommitCount;
+            }
+        } catch (error: any) {
+            console.error(
+                "Error tracking commits:",
+                error.response?.data || error,
+            );
+        }
+    }, 300000);
+};

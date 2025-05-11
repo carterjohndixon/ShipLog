@@ -5,6 +5,7 @@ import {
     getUsersRepos,
     githubCallback,
     githubWebhook,
+    trackCommits,
     verifyGithub,
 } from "../controllers/github";
 
@@ -15,5 +16,6 @@ router.get("/callback", githubCallback);
 router.get("/repos", getUsersRepos);
 router.get("/test/commit", getCodeCommit);
 router.post("/api/webhook", githubWebhook);
+router.post("/api/track-commits", trackCommits);
 
 export default router;

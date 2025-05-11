@@ -5,6 +5,7 @@ import axios from "axios";
 import express from "express";
 import {
     connectBot,
+    getAccessToken,
     getChannels,
     slackOAuthCallback,
 } from "../controllers/slack";
@@ -24,9 +25,9 @@ const app = new App({
 });
 
 const owner = "carterjohndixon";
-const repo = "rust-voice";
 
 router.get("/oauth/callback", slackOAuthCallback);
+router.post("/api/get-token", getAccessToken);
 router.get("/api/channels", getChannels);
 router.post("/api/bot/configure", connectBot);
 
@@ -76,108 +77,108 @@ app.command("/echo", async ({ command, ack, respond }) => {
     await respond(`${command.text || "No input provided"}`);
 });
 
-app.command("/get_commit_info", async ({ command, ack, respond, logger }) => {
-    await ack();
+// app.command("/get_commit_info", async ({ command, ack, respond, logger }) => {
+//     await ack();
 
-    logger.info("Processing /get_commit_info command");
+//     logger.info("Processing /get_commit_info command");
 
-    if (!owner || !repo) {
-        return respond({
-            response_type: "ephemeral",
-            text: "Please provide both GitHub owner and repo.",
-        });
-    }
+//     if (!owner || !repo) {
+//         return respond({
+//             response_type: "ephemeral",
+//             text: "Please provide both GitHub owner and repo.",
+//         });
+//     }
 
-    const githubAccessToken = process.env.GIT_ACCESS_TOKEN;
+//     const githubAccessToken = process.env.GIT_ACCESS_TOKEN;
 
-    if (!githubAccessToken) {
-        return respond({
-            response_type: "ephemeral",
-            text: "GitHub access token is missing or invalid.",
-        });
-    }
+//     if (!githubAccessToken) {
+//         return respond({
+//             response_type: "ephemeral",
+//             text: "GitHub access token is missing or invalid.",
+//         });
+//     }
 
-    try {
-        const commitsResponse = await axios.get(
-            `https://api.github.com/repos/${owner}/${repo}/commits`,
-            {
-                headers: {
-                    Authorization: `Bearer ${githubAccessToken}`,
-                },
-            },
-        );
+//     try {
+//         const commitsResponse = await axios.get(
+//             `https://api.github.com/repos/${owner}/${repo}/commits`,
+//             {
+//                 headers: {
+//                     Authorization: `Bearer ${githubAccessToken}`,
+//                 },
+//             },
+//         );
 
-        const latestCommitSHA = commitsResponse.data[0].sha;
-        const commitResponse = await axios.get(
-            `https://api.github.com/repos/${owner}/${repo}/commits/${latestCommitSHA}`,
-            {
-                headers: {
-                    Authorization: `Bearer ${githubAccessToken}`,
-                },
-            },
-        );
+//         const latestCommitSHA = commitsResponse.data[0].sha;
+//         const commitResponse = await axios.get(
+//             `https://api.github.com/repos/${owner}/${repo}/commits/${latestCommitSHA}`,
+//             {
+//                 headers: {
+//                     Authorization: `Bearer ${githubAccessToken}`,
+//                 },
+//             },
+//         );
 
-        const files = commitResponse.data.files;
-        const diffCode = files
-            .map((file: any) => {
-                if (!file.patch) return "";
-                return file.patch
-                    .split("\n")
-                    .filter((line: string) =>
-                        line.startsWith("+") && !line.startsWith("+++")
-                    )
-                    .map((line: string) => line.slice(1))
-                    .join("\n");
-            })
-            .join("\n");
+//         const files = commitResponse.data.files;
+//         const diffCode = files
+//             .map((file: any) => {
+//                 if (!file.patch) return "";
+//                 return file.patch
+//                     .split("\n")
+//                     .filter((line: string) =>
+//                         line.startsWith("+") && !line.startsWith("+++")
+//                     )
+//                     .map((line: string) => line.slice(1))
+//                     .join("\n");
+//             })
+//             .join("\n");
 
-        const aiPrompt = `Summarize the following code changes:\n\n${diffCode}`;
+//         const aiPrompt = `Summarize the following code changes:\n\n${diffCode}`;
 
-        const aiRes = await axios.post(
-            "http://127.0.0.1:54321/functions/v1/ant",
-            { prompt: aiPrompt },
-            {
-                headers: {
-                    Authorization: `Bearer ${process.env.DENO_AI_TOKEN}`,
-                    "Content-Type": "application/json",
-                },
-            },
-        );
+//         const aiRes = await axios.post(
+//             "http://127.0.0.1:54321/functions/v1/ant",
+//             { prompt: aiPrompt },
+//             {
+//                 headers: {
+//                     Authorization: `Bearer ${process.env.DENO_AI_TOKEN}`,
+//                     "Content-Type": "application/json",
+//                 },
+//             },
+//         );
 
-        const aiSummary = aiRes.data.msg?.choices?.[0]?.message?.content ??
-            "No summary generated";
+//         const aiSummary = aiRes.data.msg?.choices?.[0]?.message?.content ??
+//             "No summary generated";
 
-        // Create a function that formats the ai response to send to slack.
-        await sendCommitToSlack(
-            latestCommitSHA,
-            commitResponse.data.commit.message,
-            aiSummary,
-            "C08RTEG7JAW",
-        );
+//         // Create a function that formats the ai response to send to slack.
+//         await sendCommitToSlack(
+//             latestCommitSHA,
+//             commitResponse.data.commit.message,
+//             aiSummary,
+//             "C08RTEG7JAW",
+//         );
 
-        // return respond.json({
-        //     commitSHA: latestCommitSHA,
-        //     filesChanged: files.map((f: any) => ({
-        //         filename: f.filename,
-        //         status: f.status,
-        //         patch: f.patch,
-        //     })),
-        //     aiSummary,
-        // });
+//         // return respond.json({
+//         //     commitSHA: latestCommitSHA,
+//         //     filesChanged: files.map((f: any) => ({
+//         //         filename: f.filename,
+//         //         status: f.status,
+//         //         patch: f.patch,
+//         //     })),
+//         //     aiSummary,
+//         // });
 
-        // Respond to the command in Slack
-        return respond({
-            response_type: "in_channel",
-            text: aiSummary,
-        });
-    } catch (error: any) {
-        logger.error("Error fetching commit information:", error);
-        return respond({
-            response_type: "ephemeral",
-            text: "Sorry, an error occurred while processing your request.",
-        });
-    }
-});
+//         // Respond to the command in Slack
+//         return respond({
+//             response_type: "in_channel",
+//             text: aiSummary,
+//         });
+//     } catch (error: any) {
+//         logger.error("Error fetching commit information:", error);
+//         return respond({
+//             response_type: "ephemeral",
+//             text: "Sorry, an error occurred while processing your request.",
+//         });
+//     }
+// });
 
 // Start the app (if not being imported elsewhere)
 if (require.main === module) {
