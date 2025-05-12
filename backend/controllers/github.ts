@@ -340,9 +340,8 @@ export const getCodeCommit = async (
 // eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6IkhlbGxvV29ybGQiLCJpYXQiOjE3NDYyOTgwODJ9.XelSzH8dO8c9VeDfc3WsSlpp2arPeZR4KumxVTmHUF8
 
 // raw_url has the code in files json (https://api.github.com/repos/carterjohndixon/POOFie/commits/7537c2999284fa14f69c724789cc1bc6f0e6610f)
-
 const trackingIntervals = new Map();
-let lastCommitCount = 0;
+const repoCommitCounts = new Map();
 
 export const trackCommits = async (
     req: Request,
@@ -350,98 +349,376 @@ export const trackCommits = async (
 ): Promise<any> => {
     const { repo, owner, channel } = req.body;
 
-    console.log("repo:", repo);
-    console.log("owner:", owner);
-    console.log("channel:", channel);
+    console.log("[TRACK-COMMITS] Starting setup for:", {
+        repo,
+        owner,
+        channel,
+    });
 
     const githubAccessToken = userTokenStore.get(owner);
     if (!githubAccessToken) {
+        console.log(
+            "[TRACK-COMMITS] Authentication error: No GitHub token for user",
+            owner,
+        );
         return res.status(401).json({
             error: "User not authenticated with GitHub.",
         });
     }
 
     if (!owner || !repo || !githubAccessToken) {
+        console.log("[TRACK-COMMITS] Missing parameters:", {
+            owner: !!owner,
+            repo: !!repo,
+            hasToken: !!githubAccessToken,
+        });
         return res.status(400).json({
             error:
                 "Missing required parameters: owner, repo, and githubAccessToken are required",
         });
     }
 
-    setInterval(async () => {
-        try {
-            const commitsResponse = await axios.get(
-                `https://api.github.com/repos/${owner}/${repo}/commits`,
-                {
-                    headers: {
-                        Authorization: `Bearer ${githubAccessToken}`,
-                    },
+    const trackingId = `${owner}:${repo}:${channel}`;
+    console.log("[TRACK-COMMITS] Generated tracking ID:", trackingId);
+
+    if (trackingIntervals.has(trackingId)) {
+        console.log(
+            "[TRACK-COMMITS] Clearing previous interval for",
+            trackingId,
+        );
+        clearInterval(trackingIntervals.get(trackingId));
+        trackingIntervals.delete(trackingId);
+    }
+
+    try {
+        const isRepoId = !isNaN(Number(repo));
+        let repoApiUrl;
+
+        if (isRepoId) {
+            console.log("[TRACK-COMMITS] Using repository ID:", repo);
+            repoApiUrl = `https://api.github.com/repositories/${repo}`;
+        } else {
+            console.log("[TRACK-COMMITS] Using repository name:", repo);
+            repoApiUrl = `https://api.github.com/repos/${owner}/${repo}`;
+        }
+
+        console.log(
+            "[TRACK-COMMITS] Testing GitHub API access with URL:",
+            repoApiUrl,
+        );
+        const repoTest = await axios.get(
+            repoApiUrl,
+            {
+                headers: {
+                    Authorization: `Bearer ${githubAccessToken}`,
+                    Accept: "application/vnd.github.v3+json",
                 },
+            },
+        );
+
+        console.log(
+            "[TRACK-COMMITS] GitHub repo access successful:",
+            repoTest.status,
+        );
+        console.log("[TRACK-COMMITS] Repository info:", {
+            name: repoTest.data.name,
+            full_name: repoTest.data.full_name,
+            id: repoTest.data.id,
+        });
+
+        const repoName = repoTest.data.name;
+        const repoOwnerLogin = repoTest.data.owner.login;
+        const repoId = repoTest.data.id;
+
+        console.log("[TRACK-COMMITS] Using repository details for API calls:", {
+            owner: repoOwnerLogin,
+            name: repoName,
+            id: repoId,
+        });
+
+        console.log("[TRACK-COMMITS] Getting initial commit count");
+        const initialCommitsResponse = await axios.get(
+            `https://api.github.com/repos/${repoOwnerLogin}/${repoName}/commits?per_page=1`,
+            {
+                headers: {
+                    Authorization: `Bearer ${githubAccessToken}`,
+                    Accept: "application/vnd.github.v3+json",
+                },
+            },
+        );
+
+        let initialCommitCount = 0;
+        if (initialCommitsResponse.headers["link"]) {
+            const linkHeader = initialCommitsResponse.headers["link"];
+            const match = linkHeader.match(/page=(\d+)>; rel="last"/);
+            if (match && match[1]) {
+                initialCommitCount = parseInt(match[1], 10);
+                console.log(
+                    "[TRACK-COMMITS] Initial commit count from link header:",
+                    initialCommitCount,
+                );
+            }
+        }
+
+        repoCommitCounts.set(trackingId, initialCommitCount);
+        console.log(
+            "[TRACK-COMMITS] Set initial commit count:",
+            initialCommitCount,
+        );
+
+        console.log(
+            "[TRACK-COMMITS] Testing Slack channel access for:",
+            channel,
+        );
+        try {
+            await sendSlackTestMessage(
+                channel,
+                `ShipLogBot is now tracking ${repoOwnerLogin}/${repoName}`,
             );
+            console.log("[TRACK-COMMITS] Slack channel access successful");
+        } catch (slackError: any) {
+            console.error(
+                "[TRACK-COMMITS] Slack channel test failed:",
+                slackError,
+            );
+            throw new Error(`Slack channel test failed: ${slackError.message}`);
+        }
 
-            const currentCommitCount = commitsResponse.data.length;
+        console.log("[TRACK-COMMITS] Setting up tracking interval");
+        const intervalId = setInterval(async () => {
+            try {
+                console.log(
+                    `[TRACKER-${trackingId}] Checking for new commits...`,
+                );
 
-            if (currentCommitCount > lastCommitCount) {
-                const latestCommitSHA = commitsResponse.data[0].sha;
-
-                const commitResponse = await axios.get(
-                    `https://api.github.com/repos/${owner}/${repo}/commits/${latestCommitSHA}`,
+                const commitsResponse = await axios.get(
+                    `https://api.github.com/repos/${repoOwnerLogin}/${repoName}/commits?per_page=1`,
                     {
                         headers: {
                             Authorization: `Bearer ${githubAccessToken}`,
+                            Accept: "application/vnd.github.v3+json",
                         },
                     },
                 );
 
-                console.log("Commit:", commitResponse);
+                let currentCommitCount = 0;
+                if (commitsResponse.headers["link"]) {
+                    const linkHeader = commitsResponse.headers["link"];
+                    const match = linkHeader.match(/page=(\d+)>; rel="last"/);
+                    if (match && match[1]) {
+                        currentCommitCount = parseInt(match[1], 10);
+                    }
+                }
 
-                const files = commitResponse.data.files;
-                const diffCode = files
-                    .map((file: any) => {
-                        if (!file.patch) return "";
-                        return file.patch
-                            .split("\n")
-                            .filter((line: string) =>
-                                line.startsWith("+") && !line.startsWith("+++")
-                            )
-                            .map((line: string) => line.slice(1))
-                            .join("\n");
-                    })
-                    .join("\n");
+                console.log(
+                    `[TRACKER-${trackingId}] Previous count: ${
+                        repoCommitCounts.get(trackingId)
+                    }, Current count: ${currentCommitCount}`,
+                );
 
-                const aiPrompt =
-                    `Summarize the following code changes:\n\n${diffCode}`;
+                const previousCount = repoCommitCounts.get(trackingId) || 0;
+                if (currentCommitCount > previousCount) {
+                    console.log(
+                        `[TRACKER-${trackingId}] New commits detected!`,
+                    );
 
-                const aiRes = await axios.post(
-                    "http://127.0.0.1:54321/functions/v1/ant",
-                    { prompt: aiPrompt },
-                    {
-                        headers: {
-                            Authorization:
-                                `Bearer ${process.env.DENO_AI_TOKEN}`,
-                            "Content-Type": "application/json",
+                    const latestCommitSHA = commitsResponse.data[0].sha;
+                    console.log(
+                        `[TRACKER-${trackingId}] Fetching details for commit: ${latestCommitSHA}`,
+                    );
+
+                    const commitResponse = await axios.get(
+                        `https://api.github.com/repos/${repoOwnerLogin}/${repoName}/commits/${latestCommitSHA}`,
+                        {
+                            headers: {
+                                Authorization: `Bearer ${githubAccessToken}`,
+                                Accept: "application/vnd.github.v3+json",
+                            },
                         },
-                    },
+                    );
+
+                    console.log(
+                        `[TRACKER-${trackingId}] Successfully fetched commit details`,
+                    );
+
+                    if (
+                        !commitResponse.data.files ||
+                        !Array.isArray(commitResponse.data.files)
+                    ) {
+                        console.error(
+                            `[TRACKER-${trackingId}] Commit response missing files array:`,
+                            commitResponse.data,
+                        );
+                        throw new Error(
+                            "GitHub API response missing files array",
+                        );
+                    }
+
+                    const files = commitResponse.data.files;
+                    console.log(
+                        `[TRACKER-${trackingId}] Processing ${files.length} changed files`,
+                    );
+
+                    const diffCode = files
+                        .map((file: any) => {
+                            if (!file.patch) {
+                                console.log(
+                                    `[TRACKER-${trackingId}] File ${file.filename} has no patch data`,
+                                );
+                                return "";
+                            }
+                            return file.patch
+                                .split("\n")
+                                .filter((line: string) =>
+                                    line.startsWith("+") &&
+                                    !line.startsWith("+++")
+                                )
+                                .map((line: string) => line.slice(1))
+                                .join("\n");
+                        })
+                        .join("\n");
+
+                    let aiSummary = "No code changes detected";
+                    if (diffCode.trim()) {
+                        console.log(
+                            `[TRACKER-${trackingId}] Generating AI summary for changes`,
+                        );
+                        try {
+                            const aiPrompt =
+                                `Summarize the following code changes:\n\n${diffCode}`;
+
+                            const aiRes = await axios.post(
+                                "http://127.0.0.1:54321/functions/v1/ant",
+                                { prompt: aiPrompt },
+                                {
+                                    headers: {
+                                        Authorization:
+                                            `Bearer ${process.env.DENO_AI_TOKEN}`,
+                                        "Content-Type": "application/json",
+                                    },
+                                },
+                            );
+
+                            aiSummary = aiRes.data.msg?.choices?.[0]?.message
+                                ?.content ?? "No summary generated";
+                            console.log(
+                                `[TRACKER-${trackingId}] Successfully generated AI summary`,
+                            );
+                        } catch (aiError: any) {
+                            console.error(
+                                `[TRACKER-${trackingId}] Failed to generate AI summary:`,
+                                aiError,
+                            );
+                            aiSummary = "Failed to generate summary: " +
+                                aiError.message;
+                        }
+                    } else {
+                        console.log(
+                            `[TRACKER-${trackingId}] No code changes to summarize`,
+                        );
+                    }
+
+                    console.log(
+                        `[TRACKER-${trackingId}] Sending commit info to Slack channel`,
+                    );
+                    await sendCommitToSlack(
+                        latestCommitSHA,
+                        commitResponse.data.commit.message,
+                        aiSummary,
+                        channel,
+                    );
+
+                    console.log(
+                        `[TRACKER-${trackingId}] Successfully sent to Slack`,
+                    );
+
+                    repoCommitCounts.set(trackingId, currentCommitCount);
+                    console.log(
+                        `[TRACKER-${trackingId}] Updated commit count to ${currentCommitCount}`,
+                    );
+                } else {
+                    console.log(
+                        `[TRACKER-${trackingId}] No new commits detected`,
+                    );
+                }
+            } catch (error: any) {
+                console.error(
+                    `[TRACKER-${trackingId}] Error tracking commits:`,
+                    error,
                 );
 
-                const aiSummary =
-                    aiRes.data.msg?.choices?.[0]?.message?.content ??
-                        "No summary generated";
-
-                await sendCommitToSlack(
-                    latestCommitSHA,
-                    commitResponse.data.commit.message,
-                    aiSummary,
-                    channel,
-                );
-
-                lastCommitCount = currentCommitCount;
+                if (error.response) {
+                    console.error(`[TRACKER-${trackingId}] Server response:`, {
+                        status: error.response.status,
+                        data: error.response.data,
+                        headers: error.response.headers,
+                    });
+                } else if (error.request) {
+                    console.error(
+                        `[TRACKER-${trackingId}] No response received:`,
+                        error.request,
+                    );
+                } else {
+                    console.error(
+                        `[TRACKER-${trackingId}] Error during request setup:`,
+                        error.message,
+                    );
+                }
             }
-        } catch (error: any) {
+        }, 300000);
+
+        trackingIntervals.set(trackingId, intervalId);
+        console.log(
+            "[TRACK-COMMITS] Successfully set up tracking with interval ID:",
+            intervalId,
+        );
+
+        return res.status(200).json({
+            success: true,
+            message:
+                `Now tracking commits for ${repoOwnerLogin}/${repoName} in channel ${channel}`,
+            trackingId,
+        });
+    } catch (error: any) {
+        console.error("[TRACK-COMMITS] Failed to set up tracking:", error);
+
+        // Detailed error logging
+        if (error.response) {
+            console.error("[TRACK-COMMITS] Server response:", {
+                status: error.response.status,
+                data: error.response.data,
+                headers: error.response.headers,
+            });
+
+            // GitHub API specific error handling
+            if (error.response.status === 404) {
+                return res.status(404).json({
+                    error:
+                        "Repository not found. Make sure the repository exists and your GitHub token has access to it.",
+                    details: error.response.data,
+                });
+            }
+        } else if (error.request) {
             console.error(
-                "Error tracking commits:",
-                error.response?.data || error,
+                "[TRACK-COMMITS] No response received:",
+                error.request,
             );
+        } else {
+            console.error("[TRACK-COMMITS] Error message:", error.message);
         }
-    }, 300000);
+
+        return res.status(500).json({
+            error: "Failed to set up commit tracking",
+            details: error.response?.data || error.message,
+        });
+    }
+};
+
+const sendSlackTestMessage = async (channel: string, message: string) => {
+    return await sendCommitToSlack(
+        "test",
+        "ShipLogBot Configuration",
+        message,
+        channel,
+    );
 };
