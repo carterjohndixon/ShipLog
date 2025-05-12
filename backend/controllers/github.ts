@@ -341,6 +341,7 @@ export const getCodeCommit = async (
 
 // raw_url has the code in files json (https://api.github.com/repos/carterjohndixon/POOFie/commits/7537c2999284fa14f69c724789cc1bc6f0e6610f)
 
+const trackingIntervals = new Map();
 let lastCommitCount = 0;
 
 export const trackCommits = async (
