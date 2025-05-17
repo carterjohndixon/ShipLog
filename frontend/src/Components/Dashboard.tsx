@@ -20,7 +20,6 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     const getUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
-      console.log(user?.id);
       if (!user) {
         navigate("/login", { replace: true });
       } else {
@@ -42,7 +41,6 @@ const Dashboard: React.FC = () => {
       const urlParams = new URLSearchParams(window.location.search)
       const code = urlParams.get("code");
       const state = urlParams.get("state");
-      console.log("code:", code, "state:", state);
       if (code && state == "github") {
         try {
           const res = await githubClient.get(`/callback?code=${code}`);
@@ -82,7 +80,6 @@ const Dashboard: React.FC = () => {
       const urlParams = new URLSearchParams(window.location.search)
       const code = urlParams.get("code");
       const state = urlParams.get("state");
-      console.log("code:", code, "state:", state);
       if (code && state !== "github") {
         try {
           const res = await axios.post("https://slack.com/api/oauth.v2.access", {
@@ -110,8 +107,6 @@ const Dashboard: React.FC = () => {
 
   const openModal = (repo: any) => {
     setSelectedRepo(repo);
-    console.log(typeof(repo));
-    console.log(selectedRepo);
     setShowModal(true);
     navigate(`?repo=${encodeURIComponent(repo!)}`, { replace: true });
   };
@@ -126,18 +121,22 @@ const Dashboard: React.FC = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-900 to-sky-600 text-white px-6 py-8">
       <h1 className="text-4xl font-bold text-center mb-6">Welcome to your Dashboard</h1>
-      <p className="text-center text-lg mb-6">
-        Click the button below to connect your GitHub account and select a repository.
-      </p>
+      {repos.length === 0 && (
+        <>
+        <p className="text-center text-lg mb-6">
+          Click the button below to connect your GitHub account and select a repository.
+        </p>
 
-      <div className="flex justify-center mb-8">
-        <button
-          className="bg-white text-blue-800 px-6 py-3 rounded-xl shadow-lg hover:bg-gray-100 transition"
-          onClick={handleGitHubLogin}
-        >
-          Connect GitHub
-        </button>
-      </div>
+        <div className="flex justify-center mb-8">
+          <button
+            className="bg-white text-blue-800 px-6 py-3 rounded-xl shadow-lg hover:bg-gray-100 transition"
+            onClick={handleGitHubLogin}
+          >
+            Connect GitHub
+          </button>
+        </div>
+      </>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
         {repos.map((repo) => (

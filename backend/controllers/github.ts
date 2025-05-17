@@ -279,35 +279,46 @@ export const getCodeCommit = async (
         );
 
         const files = commitResponse.data.files;
+        const MAX_CHARS = 5000;
+        const summaries: string[] = [];
 
-        const diffCode = files
-            .map((file: any) => {
-                if (!file.patch) return "";
-                return file.patch
-                    .split("\n")
-                    .filter((line: string) =>
-                        line.startsWith("+") && !line.startsWith("+++")
-                    )
-                    .map((line: string) => line.slice(1))
-                    .join("\n");
-            })
-            .join("\n");
+        for (const file of files) {
+            if (!file.patch) continue;
 
-        const aiPrompt = `Summarize the following code changes:\n\n${diffCode}`;
+            const addedLines = file.patch
+                .split("\n")
+                .filter((line: string) =>
+                    line.startsWith("+") && !line.startsWith("+++")
+                )
+                .map((line: string) => line.slice(1))
+                .join("\n");
 
-        const aiRes = await axios.post(
-            "http://127.0.0.1:54321/functions/v1/ant",
-            { prompt: aiPrompt },
-            {
-                headers: {
-                    Authorization: `Bearer ${process.env.DENO_AI_TOKEN}`,
-                    "Content-Type": "application/json",
+            if (addedLines.length === 0) continue;
+
+            const prompt =
+                `Summarize the changes made in the file "${file.filename}":\n\n${
+                    addedLines.slice(0, MAX_CHARS)
+                }`;
+
+            const aiRes = await axios.post(
+                "http://127.0.0.1:54321/functions/v1/ant",
+                { prompt },
+                {
+                    headers: {
+                        Authorization: `Bearer ${process.env.DENO_AI_TOKEN}`,
+                        "Content-Type": "application/json",
+                    },
                 },
-            },
-        );
+            );
 
-        const aiSummary = aiRes.data.msg?.choices?.[0]?.message?.content ??
-            "No summary generated";
+            const summary = aiRes.data.msg?.choices?.[0]?.message?.content ??
+                "No summary generated";
+            summaries.push(`**${file.filename}**:\n${summary}`);
+        }
+
+        const aiSummary = summaries.length > 0
+            ? summaries.join("\n\n")
+            : "No relevant code changes found.";
 
         await sendCommitToSlack(
             latestCommitSHA,
@@ -406,15 +417,12 @@ export const trackCommits = async (
             "[TRACK-COMMITS] Testing GitHub API access with URL:",
             repoApiUrl,
         );
-        const repoTest = await axios.get(
-            repoApiUrl,
-            {
-                headers: {
-                    Authorization: `Bearer ${githubAccessToken}`,
-                    Accept: "application/vnd.github.v3+json",
-                },
+        const repoTest = await axios.get(repoApiUrl, {
+            headers: {
+                Authorization: `Bearer ${githubAccessToken}`,
+                Accept: "application/vnd.github.v3+json",
             },
-        );
+        });
 
         console.log(
             "[TRACK-COMMITS] GitHub repo access successful:",
@@ -429,12 +437,6 @@ export const trackCommits = async (
         const repoName = repoTest.data.name;
         const repoOwnerLogin = repoTest.data.owner.login;
         const repoId = repoTest.data.id;
-
-        console.log("[TRACK-COMMITS] Using repository details for API calls:", {
-            owner: repoOwnerLogin,
-            name: repoName,
-            id: repoId,
-        });
 
         console.log("[TRACK-COMMITS] Getting initial commit count");
         const initialCommitsResponse = await axios.get(
@@ -510,13 +512,11 @@ export const trackCommits = async (
                     }
                 }
 
+                const previousCount = repoCommitCounts.get(trackingId) || 0;
                 console.log(
-                    `[TRACKER-${trackingId}] Previous count: ${
-                        repoCommitCounts.get(trackingId)
-                    }, Current count: ${currentCommitCount}`,
+                    `[TRACKER-${trackingId}] Previous count: ${previousCount}, Current count: ${currentCommitCount}`,
                 );
 
-                const previousCount = repoCommitCounts.get(trackingId) || 0;
                 if (currentCommitCount > previousCount) {
                     console.log(
                         `[TRACKER-${trackingId}] New commits detected!`,
@@ -537,17 +537,12 @@ export const trackCommits = async (
                         },
                     );
 
-                    console.log(
-                        `[TRACKER-${trackingId}] Successfully fetched commit details`,
-                    );
-
                     if (
                         !commitResponse.data.files ||
                         !Array.isArray(commitResponse.data.files)
                     ) {
                         console.error(
-                            `[TRACKER-${trackingId}] Commit response missing files array:`,
-                            commitResponse.data,
+                            `[TRACKER-${trackingId}] Commit response missing files array`,
                         );
                         throw new Error(
                             "GitHub API response missing files array",
@@ -555,18 +550,9 @@ export const trackCommits = async (
                     }
 
                     const files = commitResponse.data.files;
-                    console.log(
-                        `[TRACKER-${trackingId}] Processing ${files.length} changed files`,
-                    );
-
                     const diffCode = files
                         .map((file: any) => {
-                            if (!file.patch) {
-                                console.log(
-                                    `[TRACKER-${trackingId}] File ${file.filename} has no patch data`,
-                                );
-                                return "";
-                            }
+                            if (!file.patch) return "";
                             return file.patch
                                 .split("\n")
                                 .filter((line: string) =>
@@ -580,13 +566,9 @@ export const trackCommits = async (
 
                     let aiSummary = "No code changes detected";
                     if (diffCode.trim()) {
-                        console.log(
-                            `[TRACKER-${trackingId}] Generating AI summary for changes`,
-                        );
                         try {
                             const aiPrompt =
                                 `Summarize the following code changes:\n\n${diffCode}`;
-
                             const aiRes = await axios.post(
                                 "http://127.0.0.1:54321/functions/v1/ant",
                                 { prompt: aiPrompt },
@@ -612,10 +594,6 @@ export const trackCommits = async (
                             aiSummary = "Failed to generate summary: " +
                                 aiError.message;
                         }
-                    } else {
-                        console.log(
-                            `[TRACKER-${trackingId}] No code changes to summarize`,
-                        );
                     }
 
                     console.log(
@@ -626,10 +604,6 @@ export const trackCommits = async (
                         commitResponse.data.commit.message,
                         aiSummary,
                         channel,
-                    );
-
-                    console.log(
-                        `[TRACKER-${trackingId}] Successfully sent to Slack`,
                     );
 
                     repoCommitCounts.set(trackingId, currentCommitCount);
@@ -646,7 +620,6 @@ export const trackCommits = async (
                     `[TRACKER-${trackingId}] Error tracking commits:`,
                     error,
                 );
-
                 if (error.response) {
                     console.error(`[TRACKER-${trackingId}] Server response:`, {
                         status: error.response.status,
@@ -665,7 +638,7 @@ export const trackCommits = async (
                     );
                 }
             }
-        }, 300000);
+        }, 300000); // every 5 minutes
 
         trackingIntervals.set(trackingId, intervalId);
         console.log(
@@ -681,35 +654,26 @@ export const trackCommits = async (
         });
     } catch (error: any) {
         console.error("[TRACK-COMMITS] Failed to set up tracking:", error);
-
-        // Detailed error logging
         if (error.response) {
             console.error("[TRACK-COMMITS] Server response:", {
                 status: error.response.status,
                 data: error.response.data,
                 headers: error.response.headers,
             });
-
-            // GitHub API specific error handling
-            if (error.response.status === 404) {
-                return res.status(404).json({
-                    error:
-                        "Repository not found. Make sure the repository exists and your GitHub token has access to it.",
-                    details: error.response.data,
-                });
-            }
         } else if (error.request) {
             console.error(
                 "[TRACK-COMMITS] No response received:",
                 error.request,
             );
         } else {
-            console.error("[TRACK-COMMITS] Error message:", error.message);
+            console.error(
+                "[TRACK-COMMITS] Error during request setup:",
+                error.message,
+            );
         }
 
         return res.status(500).json({
-            error: "Failed to set up commit tracking",
-            details: error.response?.data || error.message,
+            error: "Failed to set up commit tracking: " + error.message,
         });
     }
 };
